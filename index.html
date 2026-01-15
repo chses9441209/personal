@@ -1,6 +1,223 @@
-<html>
+<!doctype html>
+<html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<a href="sms:61058?&body=B"><img src="img/LOGO.JPG"title="飢餓投票按這裡"></a>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>抽籤遊戲</title>
+  <style>
+    :root{--bg:#0b1020;--card:#121a33;--muted:#9fb0ff;--txt:#e8edff;}
+    body{margin:0;font-family:system-ui,-apple-system,"Noto Sans TC",Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#050816,var(--bg));color:var(--txt);}
+    .wrap{max-width:860px;margin:0 auto;padding:24px;}
+    h1{font-size:22px;margin:0 0 16px;}
+    .card{background:rgba(18,26,51,.92);border:1px solid rgba(159,176,255,.22);border-radius:14px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);}
+    .resultBox{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px;border-radius:12px;background:rgba(255,255,255,.04);border:1px dashed rgba(159,176,255,.25)}
+    .big{font-size:20px;font-weight:800;letter-spacing:.3px}
+    .mini{font-size:12px;color:rgba(232,237,255,.7);line-height:1.6}
+    textarea,button{border-radius:10px;border:1px solid rgba(159,176,255,.25);background:#0b1330;color:var(--txt);padding:10px 12px;font-size:14px;}
+    textarea{width:100%;min-height:140px;resize:vertical;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono";font-size:12px;}
+    button{cursor:pointer;background:linear-gradient(180deg,#1b2a63,#15224f);border:1px solid rgba(159,176,255,.35);}
+    button:hover{filter:brightness(1.08);}
+    .spin{animation:flicker .12s infinite;}
+    @keyframes flicker{0%{filter:brightness(1)}50%{filter:brightness(1.25)}100%{filter:brightness(1)}}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+    kbd{background:#0b1330;border:1px solid rgba(159,176,255,.25);border-bottom-color:rgba(159,176,255,.5);padding:2px 6px;border-radius:6px;font-size:12px;}
+  </style>
 </head>
+
+<!-- tabindex 讓 body 可取得鍵盤焦點（更容易收到 Space） -->
+<body tabindex="0">
+<div class="wrap">
+  <h1>🎴 抽籤遊戲</h1>
+
+  <div class="card">
+    <div class="resultBox">
+      <div>
+        <div class="mini">本次結果</div>
+        <div id="result" class="big">尚未抽籤</div>
+        <div id="detail" class="mini">按 <kbd>Space</kbd> 進行抽籤</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="apply">套用名單</button>
+      <span class="mini">名單（每行一個）。抽籤用空白鍵（會先洗牌再停下）。</span>
+    </div>
+
+    <div style="margin-top:10px">
+      <textarea id="names">OB
+李多柔
+潘翰泓
+小鐵
+小蘭姐</textarea>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // =========================
+  // 隱藏設定（只在程式碼內）
+  // =========================
+  const LONG_PRESS_THRESHOLD_MS = 600; // 長按門檻（毫秒）
+  const FIXED_FORCE_NAME = "小蘭姐";   // 長按必定中的名字：改這行就好
+
+  const SPIN_TOTAL_MS = 900;           // 假動畫總時間
+  const SPIN_STEP_MS = 60;             // 每次跳名速度
+
+  // ====== 狀態 ======
+  let list = [];
+  let isSpaceDown = false;
+  let pressStart = 0;
+  let spinning = false;
+  let spinTimer = null;
+  let rafTimer = null;
+
+  const $ = (id) => document.getElementById(id);
+  const resultEl = $("result");
+  const detailEl = $("detail");
+  const namesEl  = $("names");
+  const applyBtn = $("apply");
+
+  function parseList() {
+    return namesEl.value
+      .split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
+  function applyList() {
+    list = parseList();
+    if (list.length === 0) list = ["（名單是空的）"];
+    resultEl.textContent = "名單已套用，按 Space 抽籤";
+    detailEl.textContent = `目前名單人數：${list.length}。按 Space 抽籤（會先洗牌）。`;
+  }
+
+  function getNormalPick() {
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  function getForcedPick() {
+    // 如果固定名字不在名單中，就退回第一個，避免顯示 undefined
+    if (list.includes(FIXED_FORCE_NAME)) return FIXED_FORCE_NAME;
+    return list[0];
+  }
+
+  function setControlsEnabled(enabled) {
+    applyBtn.disabled = !enabled;
+    namesEl.disabled = !enabled;
+  }
+
+  // 假動畫：先亂跳，再停在 finalPick
+  function fakeSpinTo(finalPick) {
+    if (spinning) return;
+    spinning = true;
+
+    resultEl.classList.add("spin");
+    detailEl.textContent = "洗牌中…";
+    setControlsEnabled(false);
+
+    const start = performance.now();
+    spinTimer = setInterval(() => {
+      const elapsed = performance.now() - start;
+
+      // 亂跳（視覺公平）
+      resultEl.textContent = list[Math.floor(Math.random() * list.length)];
+
+      if (elapsed >= SPIN_TOTAL_MS) {
+        clearInterval(spinTimer);
+        spinTimer = null;
+
+        resultEl.textContent = finalPick;
+        resultEl.classList.remove("spin");
+        detailEl.textContent = "完成 ✅";
+
+        spinning = false;
+        setControlsEnabled(true);
+      }
+    }, SPIN_STEP_MS);
+  }
+
+  // 短按/長按偵測
+  function startHold() {
+    pressStart = performance.now();
+
+    const tick = () => {
+      // 你想更隱密就把這行改成固定字即可
+      detailEl.textContent = "準備中…";
+      rafTimer = requestAnimationFrame(tick);
+    };
+    rafTimer = requestAnimationFrame(tick);
+  }
+
+  function endHold() {
+    if (rafTimer) cancelAnimationFrame(rafTimer);
+    rafTimer = null;
+
+    const heldMs = performance.now() - pressStart;
+
+    // 真正結果（UI 不透露規則）
+    const finalPick = (heldMs >= LONG_PRESS_THRESHOLD_MS)
+      ? getForcedPick()
+      : getNormalPick();
+
+    fakeSpinTo(finalPick);
+  }
+
+  // ✅ 單一版本：用 capture 攔空白鍵，避免被 textarea / 預設捲動吃掉
+  document.addEventListener("keydown", (e) => {
+    const isSpace = (e.code === "Space" || e.key === " ");
+    if (!isSpace) return;
+
+    // 避免空白鍵捲動 + 優先攔截
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (spinning) return;
+    if (e.repeat) return;
+    if (isSpaceDown) return;
+
+    // 若焦點在輸入框，先 blur（不然空白鍵會被當成輸入）
+    const tag = (e.target?.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "input") e.target.blur();
+
+    isSpaceDown = true;
+    startHold();
+  }, { capture: true, passive: false });
+
+  document.addEventListener("keyup", (e) => {
+    const isSpace = (e.code === "Space" || e.key === " ");
+    if (!isSpace) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!isSpaceDown) return;
+    isSpaceDown = false;
+
+    if (spinning) return;
+    endHold();
+  }, { capture: true, passive: false });
+
+  // 失焦保險：按住空白鍵時切走視窗，避免卡住
+  window.addEventListener("blur", () => {
+    if (!isSpaceDown) return;
+    isSpaceDown = false;
+    if (rafTimer) cancelAnimationFrame(rafTimer);
+    rafTimer = null;
+    detailEl.textContent = "（視窗失焦，已取消本次操作）";
+  });
+
+  // 讓頁面更容易拿到鍵盤焦點
+  function focusBody() { document.body.focus({ preventScroll: true }); }
+  window.addEventListener("load", focusBody);
+  window.addEventListener("pointerdown", focusBody);
+
+  // 名單按鈕
+  applyBtn.addEventListener("click", applyList);
+
+  // 初始化
+  applyList();
+})();
+</script>
+</body>
 </html>
